@@ -19,6 +19,7 @@ use PHPShopify\Exception\ResourceRateLimitException;
 | This class handles get, post, put, delete HTTP requests
 |
 */
+
 class CurlRequest
 {
     /**
@@ -138,21 +139,30 @@ class CurlRequest
      *
      * @param resource $ch
      *
+     * @return string
      * @throws CurlException if curl request is failed with error
      *
-     * @return string
      */
     protected static function processRequest($ch)
     {
         # Check for 429 leaky bucket error
         while (1) {
-            $output   = curl_exec($ch);
+            $output = curl_exec($ch);
             $response = new CurlResponse($output);
 
             self::$lastHttpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            \Log::debug('Shopify API response', ['code' => self::$lastHttpCode]);
             if (self::$lastHttpCode != 429) {
                 break;
             }
+
+            if (!is_null($response->getHeader('X-Shopify-Shop-Api-Call-Limit'))) {
+                \Log::debug('found header X-Shopify-Shop-Api-Call-Limit' . $response->getHeader('X-Shopify-Shop-Api-Call-Limit'));
+            } elseif (!is_null($response->getHeader('x-shopify-shop-api-call-limit'))) {
+                \Log::debug('found header x-shopify-shop-api-call-limit' . $response->getHeader('x-shopify-shop-api-call-limit'));
+            }
+
+            \Log::debug('Rate limited', ['body' => (string )$response->getBody()]);
 
             $limitHeader = explode('/', $response->getHeader('X-Shopify-Shop-Api-Call-Limit'), 2);
 
@@ -160,7 +170,16 @@ class CurlRequest
                 throw new ResourceRateLimitException($response->getBody());
             }
 
-            usleep(500000);
+            if ($response->getHeader('retry-after') > 0) {
+                $sleepSeconds = (int)$response->getHeader('retry-after');
+                $sleepTime = $sleepSeconds * 1000000;
+            } else {
+                $sleepTime = 500000;
+            }
+
+            \Log::debug('Rate limited, sleeping', ['sleep_time' => $sleepTime]);
+
+            usleep($sleepTime);
         }
 
         if (curl_errno($ch)) {
@@ -172,5 +191,5 @@ class CurlRequest
 
         return $response->getBody();
     }
-    
+
 }
