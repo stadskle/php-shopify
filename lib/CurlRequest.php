@@ -145,41 +145,49 @@ class CurlRequest
      */
     protected static function processRequest($ch)
     {
-        # Check for 429 leaky bucket error
+        $http500Retries = 2;
+        $http500Attempts = 0;
+        # Check for 429 leaky bucket error, and retry strategy for http 500
         while (1) {
             $output = curl_exec($ch);
             $response = new CurlResponse($output);
 
             self::$lastHttpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
             \Log::debug('Shopify API response', ['code' => self::$lastHttpCode]);
-            if (self::$lastHttpCode != 429) {
+            if (self::$lastHttpCode != 429 && self::$lastHttpCode != 500) {
                 break;
             }
 
-            if (!is_null($response->getHeader('X-Shopify-Shop-Api-Call-Limit'))) {
-                \Log::debug('found header X-Shopify-Shop-Api-Call-Limit' . $response->getHeader('X-Shopify-Shop-Api-Call-Limit'));
-            } elseif (!is_null($response->getHeader('x-shopify-shop-api-call-limit'))) {
-                \Log::debug('found header x-shopify-shop-api-call-limit' . $response->getHeader('x-shopify-shop-api-call-limit'));
+            if (self::$lastHttpCode == 500 && $http500Attempts === $http500Retries) {
+                break;
+            } elseif (self::$lastHttpCode == 500) {
+                $http500Attempts++;
+            } elseif (self::$lastHttpCode == 429) {
+                if (!is_null($response->getHeader('X-Shopify-Shop-Api-Call-Limit'))) {
+                    \Log::debug('found header X-Shopify-Shop-Api-Call-Limit' . $response->getHeader('X-Shopify-Shop-Api-Call-Limit'));
+                } elseif (!is_null($response->getHeader('x-shopify-shop-api-call-limit'))) {
+                    \Log::debug('found header x-shopify-shop-api-call-limit' . $response->getHeader('x-shopify-shop-api-call-limit'));
+                }
+
+                \Log::debug('Rate limited', ['body' => (string )$response->getBody()]);
+
+                $limitHeader = explode('/', $response->getHeader('X-Shopify-Shop-Api-Call-Limit'), 2);
+
+                if (isset($limitHeader[1]) && $limitHeader[0] < $limitHeader[1]) {
+                    throw new ResourceRateLimitException($response->getBody());
+                }
+
+                if ($response->getHeader('retry-after') > 0) {
+                    $sleepSeconds = (int)$response->getHeader('retry-after');
+                    $sleepTime = $sleepSeconds * 1000000;
+                } else {
+                    $sleepTime = 500000;
+                }
+
+                \Log::debug('Rate limited, sleeping', ['sleep_time' => $sleepTime]);
+
+                usleep($sleepTime);
             }
-
-            \Log::debug('Rate limited', ['body' => (string )$response->getBody()]);
-
-            $limitHeader = explode('/', $response->getHeader('X-Shopify-Shop-Api-Call-Limit'), 2);
-
-            if (isset($limitHeader[1]) && $limitHeader[0] < $limitHeader[1]) {
-                throw new ResourceRateLimitException($response->getBody());
-            }
-
-            if ($response->getHeader('retry-after') > 0) {
-                $sleepSeconds = (int)$response->getHeader('retry-after');
-                $sleepTime = $sleepSeconds * 1000000;
-            } else {
-                $sleepTime = 500000;
-            }
-
-            \Log::debug('Rate limited, sleeping', ['sleep_time' => $sleepTime]);
-
-            usleep($sleepTime);
         }
 
         if (curl_errno($ch)) {
