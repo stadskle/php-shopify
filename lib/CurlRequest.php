@@ -153,7 +153,11 @@ class CurlRequest
             $response = new CurlResponse($output);
 
             self::$lastHttpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            \Log::debug('Shopify API response', ['code' => self::$lastHttpCode]);
+
+            if (self::$lastHttpCode != 200) {
+                \Log::debug('Shopify API response', ['code' => self::$lastHttpCode]);
+            }
+
             if (self::$lastHttpCode != 429 && self::$lastHttpCode != 500) {
                 break;
             }
